@@ -58,6 +58,14 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path: string) => path.replace("/__dev/api/threads", "/threads"),
       },
+      // Framework-grounding MCP (mcp.tina4.com) token config — proxied to the
+      // Rust agent, which owns the .env write + token resolution.
+      // /__dev/api/grounding/{status,token} → agent /mcp/{status,token}
+      "/__dev/api/grounding": {
+        target: agent,
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace("/__dev/api/grounding", "/mcp"),
+      },
       // All other dev admin API calls go to the framework backend
       "/__dev/api": {
         target: backend,

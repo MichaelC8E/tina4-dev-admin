@@ -1,3 +1,6 @@
 node_modules/
 .DS_Store
 test-app/
+
+# Local scratch project for live-testing the agent (tina4python init)
+.playground/

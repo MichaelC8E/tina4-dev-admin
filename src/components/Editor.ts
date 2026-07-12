@@ -1,22 +1,14 @@
 import { api, esc } from "../api.js";
 import {
-  chat as aiChat,
-  ChatMessage,
-  generateImage as aiGenerateImage,
   probeEndpoint,
-  ragSearch,
   MODELS,
   type ModelKey,
 } from "../ai.js";
 import {
   listMcpTools,
   callMcpTool,
-  formatToolsForPrompt,
-  parseToolCalls,
   type McpTool,
 } from "../mcp.js";
-import { TINA4_CONTEXT } from "../tina4-context.js";
-import { detectFramework, getFrameworkOverlay } from "../framework-context.js";
 import { ghostCompletion } from "../ai-completion.js";
 import {
   streamExecute,
@@ -241,6 +233,7 @@ export function renderEditor(el: HTMLElement): void {
           <!-- LIST VIEW header — when looking at the thread list. -->
           <header class="threads-pane-head" id="threads-pane-head-list">
             <h3 class="threads-pane-title">Threads</h3>
+            <button type="button" class="threads-icon-btn" onclick="window.__groundingToggle()" title="Framework grounding (mcp.tina4.com)" aria-label="Framework grounding" id="grounding-toggle-btn">&#128273;</button>
             <button type="button" class="threads-icon-btn" onclick="window.__plansToggle()" title="Browse plans" aria-label="Plans" id="plans-toggle-btn">&#128203;</button>
             <button type="button" class="threads-new-btn" onclick="window.__threadsNew()" title="Start a new conversation">+ New</button>
           </header>
@@ -254,6 +247,18 @@ export function renderEditor(el: HTMLElement): void {
           <div id="plans-panel" class="plans-panel" hidden>
             <div class="plans-rows" id="plans-rows">
               <div class="threads-empty">Loading plans…</div>
+            </div>
+          </div>
+
+          <!-- Framework-grounding panel — toggled by the 🔑 button. Lets the
+               developer paste a mcp.tina4.com token so the coder/planner
+               agents ground against the official, version-current framework
+               corpus (tina4_context) instead of the local fallback. The token
+               is written to the project .env (TINA4_MCP_TOKEN) by the agent;
+               it is never rendered back in full. -->
+          <div id="grounding-panel" class="plans-panel" hidden>
+            <div id="grounding-body" style="padding:0.6rem 0.7rem;font-size:0.72rem;line-height:1.5">
+              <div class="threads-empty">Loading…</div>
             </div>
           </div>
 
@@ -304,6 +309,9 @@ export function renderEditor(el: HTMLElement): void {
               <input type="text" id="deps-search-input" class="input" placeholder="Search packages..." style="flex:1;font-size:0.8rem;padding:4px 8px">
               <button class="btn btn-sm btn-primary" onclick="window.__depsSearch()" style="font-size:0.7rem">🔍</button>
             </div>
+            <label style="display:flex;align-items:center;gap:5px;margin-top:6px;font-size:0.7rem;color:var(--muted, #6c7086);cursor:pointer" title="Install into the dev/test group (uv add --dev, npm --save-dev, composer --dev, bundle --group development)">
+              <input type="checkbox" id="deps-dev-toggle" style="margin:0"> dev dependency
+            </label>
           </div>
           <div id="deps-search-results" class="deps-results" style="flex:1;overflow-y:auto;padding:0.25rem"></div>
           <div style="border-top:1px solid var(--border);padding:0.375rem 0.5rem">
@@ -2822,6 +2830,145 @@ async function plansOpen(path: string): Promise<void> {
 
 (window as any).__plansToggle = () => { void plansToggle(); };
 (window as any).__plansOpen = (name: string) => { void plansOpen(name); };
+
+// ── Framework-grounding token panel ─────────────────────────────────
+// The coder/planner agents ground against mcp.tina4.com (tina4_context)
+// when a Bearer token is configured; otherwise they fall back to the
+// local tina4-rag corpus. This panel lets the developer paste that
+// token. The Rust agent owns the .env write + token resolution
+// (/__dev/api/grounding/{status,token} → agent /mcp/{status,token}).
+
+let groundingPanelOpen = false;
+
+async function groundingToggle(): Promise<void> {
+  const panel = document.getElementById("grounding-panel");
+  const btn = document.getElementById("grounding-toggle-btn");
+  if (!panel) return;
+  // Close the plans panel if it's open — one dropdown at a time.
+  if (plansPanelOpen) { void plansToggle(); }
+  groundingPanelOpen = !groundingPanelOpen;
+  panel.hidden = !groundingPanelOpen;
+  btn?.classList.toggle("active", groundingPanelOpen);
+  if (groundingPanelOpen) await renderGroundingPanel();
+}
+
+async function renderGroundingPanel(): Promise<void> {
+  const body = document.getElementById("grounding-body");
+  if (!body) return;
+  body.innerHTML = `<div class="threads-empty">Loading…</div>`;
+  let status: { configured?: boolean; last4?: string; url?: string } = {};
+  try {
+    const r = await fetch("/__dev/api/grounding/status");
+    if (r.ok) status = await r.json();
+  } catch { /* agent may be offline — show the entry form regardless */ }
+
+  const url = esc(status.url || "https://mcp.tina4.com");
+  const stateHtml = status.configured
+    ? `<span style="color:var(--success,#a6e3a1)">&#9679; Configured</span> <span style="opacity:0.6">(…${esc(status.last4 || "")})</span>`
+    : `<span style="color:var(--warn,#f9e2af)">&#9675; Not set</span> — using local corpus fallback`;
+
+  body.innerHTML = `
+    <div style="font-weight:600;margin-bottom:0.35rem">Framework grounding</div>
+    <div style="opacity:0.85;margin-bottom:0.5rem">Ground the coder against <code>${url}</code> (version-current Tina4 API) instead of the local fallback.</div>
+    <div style="margin-bottom:0.5rem">${stateHtml}</div>
+    <div style="display:flex;gap:4px">
+      <input type="password" id="grounding-token-input" class="input" placeholder="Paste TINA4_MCP_TOKEN…"
+        style="flex:1;font-size:0.72rem;padding:4px 8px;height:28px" autocomplete="off" />
+      <button type="button" class="btn btn-sm btn-primary" style="font-size:0.65rem;padding:2px 10px"
+        onclick="window.__groundingSave()">Save</button>
+    </div>
+    <div id="grounding-result" style="margin-top:0.4rem;min-height:1.1em"></div>
+    <div style="opacity:0.6;margin-top:0.4rem">Get a free token at <code>profile.tina4.com</code>. Stored in project <code>.env</code>; takes effect next turn.</div>
+  `;
+}
+
+async function saveGroundingToken(): Promise<void> {
+  const input = document.getElementById("grounding-token-input") as HTMLInputElement | null;
+  const result = document.getElementById("grounding-result");
+  const token = input?.value.trim();
+  if (!token) {
+    if (result) result.innerHTML = `<span style="color:var(--warn,#f9e2af)">Paste a token first.</span>`;
+    return;
+  }
+  if (result) result.innerHTML = `<span style="opacity:0.7">Saving…</span>`;
+  try {
+    const r = await fetch("/__dev/api/grounding/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data.ok) {
+      if (input) input.value = "";
+      if (result) result.innerHTML = `<span style="color:var(--success,#a6e3a1)">&#10003; Saved (…${esc(String(data.last4 || ""))}). Grounding now uses mcp.tina4.com.</span>`;
+      // Refresh the status line to reflect "Configured".
+      setTimeout(() => { void renderGroundingPanel(); }, 1200);
+    } else {
+      if (result) result.innerHTML = `<span style="color:var(--danger,#f38ba8)">Failed: ${esc(String(data.error || r.status))}</span>`;
+    }
+  } catch (e: any) {
+    if (result) result.innerHTML = `<span style="color:var(--danger,#f38ba8)">Agent unreachable — is <code>tina4 serve</code> running?</span>`;
+  }
+}
+
+(window as any).__groundingToggle = () => { void groundingToggle(); };
+(window as any).__groundingSave = () => { void saveGroundingToken(); };
+
+// One-click "Build it now" — execute an approved plan directly via
+// POST /__dev/api/execute (the Rust supervisor's plan runner), streaming
+// step-by-step progress into the thread. Reliable: it hits /execute rather
+// than re-chatting "Go ahead" (which the supervisor sometimes re-plans).
+async function buildPlanNow(file: string): Promise<void> {
+  const chat = document.getElementById("threads-chat") || document.getElementById("editor-ai-messages");
+  const bubble = document.createElement("div");
+  bubble.className = "ai-msg ai-bot";
+  const status = document.createElement("div");
+  status.style.cssText = "font-size:0.72rem;opacity:0.85;font-family:var(--font-mono,monospace)";
+  status.textContent = "▶ Building…";
+  bubble.appendChild(status);
+  chat?.appendChild(bubble);
+  const planPath = file.includes("/") ? file : `plan/${file}`;
+  try {
+    const r = await fetch("/__dev/api/execute", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan_file: planPath }),
+    });
+    if (!r.ok || !r.body) { status.textContent = `✗ execute ${r.status}`; return; }
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        let ev = "message", data = "";
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event:")) ev = line.slice(6).trim();
+          else if (line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        try {
+          const p = JSON.parse(data);
+          if (ev === "status") { status.textContent = `[${p.agent || "…"}] ${p.text || ""}`; }
+          else if (ev === "message" && p.content) {
+            const m = document.createElement("div");
+            m.style.cssText = "font-size:0.75rem;margin-top:0.25rem";
+            m.innerHTML = esc(String(p.content)).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\\n|\n/g, "<br>");
+            bubble.appendChild(m);
+          }
+        } catch { /* keepalive */ }
+        if (chat) chat.scrollTop = chat.scrollHeight;
+      }
+    }
+    status.textContent = "✓ Build complete — check the file tree / run the app";
+  } catch (e: any) {
+    status.textContent = `✗ ${e?.message || e}`;
+  }
+}
+(window as any).__buildPlanNow = (f: string) => { void buildPlanNow(f); };
 (window as any).__threadsArchiveActive = () => { void threadsArchiveActive(); };
 (window as any).__threadsArchiveFromList = (id: string) => { void threadsArchiveFromList(id); };
 
@@ -2984,7 +3131,24 @@ async function supervisorChat(
         // can always type instead.
         if (payload.approve !== false) {
           bubble.querySelectorAll(".action-pills").forEach((el) => el.remove());
-          renderPills(bubble, ["Go ahead", "Make changes", "Cancel"]);
+          // Reliable one-click execute via /execute, plus the conversational
+          // pills for iterating on the plan.
+          if (file) {
+            const buildRow = document.createElement("div");
+            buildRow.className = "action-pills";
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "action-pill";
+            btn.style.cssText = "background:rgba(166,227,161,0.16);border-color:#a6e3a1;font-weight:600";
+            btn.textContent = "⚡ Build it now";
+            btn.addEventListener("click", () => {
+              btn.setAttribute("disabled", "");
+              (window as any).__buildPlanNow(file);
+            });
+            buildRow.appendChild(btn);
+            bubble.appendChild(buildRow);
+          }
+          renderPills(bubble, ["Make changes", "Cancel"]);
         }
       } else if (eventName === "error") {
         const errMsg = String(payload.message || "Supervisor error");
@@ -4023,9 +4187,12 @@ async function depsInstall(name: string, version: string): Promise<void> {
   const results = document.getElementById("deps-search-results");
   if (results) results.innerHTML = `<div class="text-sm text-muted" style="padding:8px;text-align:center">Installing ${esc(name)}...</div>`;
 
+  const devToggle = document.getElementById("deps-dev-toggle") as HTMLInputElement | null;
+  const dev = !!devToggle?.checked;
+
   try {
     const data = await api<any>("/deps/install", "POST", {
-      name, version, registry: pkgInfo.registry, file: activeFile,
+      name, version, registry: pkgInfo.registry, file: activeFile, dev,
     });
 
     if (results) {
@@ -4052,6 +4219,9 @@ async function depsInstall(name: string, version: string): Promise<void> {
 (window as any).__depsInstall = depsInstall;
 
 // ── Scaffold ──
+// Create a new route/model/migration/middleware. The backend contract (identical
+// across Python/PHP/Ruby/Node) is `POST /scaffold/run {kind, name}` — it runs the
+// framework's own `generate` and returns `{ok, output, path?}`.
 async function scaffold(type: string): Promise<void> {
   const name = prompt(`Name for the new ${type}:`);
   if (!name) return;
@@ -4060,37 +4230,74 @@ async function scaffold(type: string): Promise<void> {
   if (output) { output.style.display = "block"; output.textContent = `Generating ${type} "${name}"...`; }
 
   try {
-    const data = await api<any>("/scaffold", "POST", { type, name });
+    const data = await api<any>("/scaffold/run", "POST", { kind: type, name });
+    const path = data.path || firstPathFromOutput(data.output);
     if (output) {
-      output.innerHTML = `<span style="color:var(--success)">✔</span> ${esc(data.message || `Created ${type}: ${name}`)}`;
-      if (data.path) {
-        output.innerHTML += `\n<span style="color:var(--info);cursor:pointer;text-decoration:underline" onclick="window.__editorOpenFile('${esc(data.path)}')">${esc(data.path)}</span>`;
+      output.innerHTML = `<span style="color:var(--success)">✔</span> ${esc(`Created ${type}: ${name}`)}`;
+      if (data.output) output.innerHTML += `\n<span style="opacity:0.7">${esc(String(data.output).trim())}</span>`;
+      if (path) {
+        output.innerHTML += `\n<span style="color:var(--info);cursor:pointer;text-decoration:underline" onclick="window.__editorOpenFile('${esc(path)}')">${esc(path)}</span>`;
       }
     }
-    // Refresh file tree
+    // Refresh file tree so the new file shows without a manual reload.
     loadFileTree(".");
-    // Open the generated file
-    if (data.path) setTimeout(() => openFile(data.path), 500);
+    if (path) setTimeout(() => openFile(path), 500);
   } catch (e: any) {
     if (output) output.innerHTML = `<span style="color:var(--danger)">✗</span> ${esc(e.message || "Failed")}`;
   }
 }
 
+// Map each run chip to its real backend endpoint. `migrate`/`test`/`seed` are
+// distinct project operations — NOT the create endpoint.
+const SCAFFOLD_RUN_ENDPOINTS: Record<string, string> = {
+  migrate: "/migrate",
+  test: "/test",
+  seed: "/seed/run",
+};
+
 async function scaffoldRun(command: string): Promise<void> {
   const output = document.getElementById("scaffold-output");
+  const endpoint = SCAFFOLD_RUN_ENDPOINTS[command];
+  if (!endpoint) {
+    if (output) { output.style.display = "block"; output.innerHTML = `<span style="color:var(--danger)">✗</span> Unknown command: ${esc(command)}`; }
+    return;
+  }
   if (output) { output.style.display = "block"; output.textContent = `Running ${command}...`; }
 
   try {
-    const data = await api<any>("/scaffold/run", "POST", { command });
-    if (output) {
-      const ok = data.success !== false;
-      output.innerHTML = `<span style="color:var(--${ok ? "success" : "danger"})">${ok ? "✔" : "✗"}</span> ${esc(data.output || data.message || command + " complete")}`;
-    }
-    // Refresh file tree after migration/seed
+    const data = await api<any>(endpoint, "POST", {});
+    if (output) output.innerHTML = `<span style="color:var(--success)">✔</span> ${esc(summariseRun(command, data))}`;
+    // Migrate/seed mutate the tree/schema — refresh so results are visible.
     if (command === "migrate" || command === "seed") loadFileTree(".");
   } catch (e: any) {
     if (output) output.innerHTML = `<span style="color:var(--danger)">✗</span> ${esc(e.message || "Failed")}`;
   }
+}
+
+/** Turn a run endpoint's JSON result into a one-line human summary. */
+function summariseRun(command: string, data: any): string {
+  if (!data || typeof data !== "object") return `${command} complete`;
+  if (command === "migrate") {
+    const a = data.applied?.length ?? 0, s = data.skipped?.length ?? 0, f = data.failed?.length ?? 0;
+    return `Migrate: ${a} applied, ${s} skipped${f ? `, ${f} failed` : ""}`;
+  }
+  if (command === "seed") {
+    const seeded = data.seeded ?? 0, failed = data.failed ?? 0;
+    return `Seed: ${seeded} rows${failed ? `, ${failed} failed` : ""}`;
+  }
+  if (command === "test") {
+    const ok = data.ok !== false && data.code === 0;
+    return `Tests ${ok ? "passed" : "failed"}${data.output ? `\n${String(data.output).trim().slice(-600)}` : ""}`;
+  }
+  return data.output || data.message || `${command} complete`;
+}
+
+/** Pull the first plausible file path out of a `generate` command's stdout,
+ *  used when the backend doesn't return a structured `path`. */
+function firstPathFromOutput(output?: string): string | undefined {
+  if (!output) return undefined;
+  const m = String(output).match(/((?:src|migrations|routes|models)\/[\w./-]+)/);
+  return m ? m[1] : undefined;
 }
 
 (window as any).__scaffold = scaffold;

@@ -6,6 +6,26 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 5173
+    },
+    {
+      "name": "dev-admin-node",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173,
+      "env": {
+        "TINA4_BACKEND": "http://localhost:7148",
+        "TINA4_AGENT": "http://localhost:9148"
+      }
+    },
+    {
+      "name": "dev-admin-play",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173,
+      "env": {
+        "TINA4_BACKEND": "http://localhost:7146",
+        "TINA4_AGENT": "http://localhost:9146"
+      }
     }
   ]
 }
