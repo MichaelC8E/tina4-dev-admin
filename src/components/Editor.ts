@@ -2169,10 +2169,15 @@ function renderThreadSidebar(): void {
     list.innerHTML = `<div class="thread-list-empty">No threads yet — click + New</div>`;
     return;
   }
-  // Most-recent first by last_message_at; archived threads at the bottom.
+  // Most-recent first by last_message_at; signed-off (archived → DONE) threads
+  // sink to the bottom but stay visible, so "done" is a real, browsable state
+  // (and typing into one spawns a fresh thread — see threadsSend).
   const sorted = [...threadList]
-    .filter((t) => !t.archived)
-    .sort((a, b) => (b.last_message_at || "").localeCompare(a.last_message_at || ""));
+    .sort((a, b) => {
+      const aa = a.archived ? 1 : 0, ab = b.archived ? 1 : 0;
+      if (aa !== ab) return aa - ab;
+      return (b.last_message_at || "").localeCompare(a.last_message_at || "");
+    });
   list.innerHTML = sorted.map((t) => {
     const status = threadInFlight.has(t.id) ? "running" : (t.status_hint || "idle");
     const activeAttr = t.id === activeThreadId ? " active" : "";
@@ -2466,9 +2471,15 @@ function renderThreadsListView(): void {
       </div>`;
     return;
   }
+  // Signed-off (archived → DONE) threads sink to the bottom but stay visible,
+  // so "done" is a real, browsable state — and typing into one spawns a fresh
+  // thread (see threadsSend). Only a user sign-off ever reads as DONE.
   const sorted = [...threadList]
-    .filter((t) => !t.archived)
-    .sort((a, b) => (b.last_message_at || "").localeCompare(a.last_message_at || ""));
+    .sort((a, b) => {
+      const aa = a.archived ? 1 : 0, ab = b.archived ? 1 : 0;
+      if (aa !== ab) return aa - ab;
+      return (b.last_message_at || "").localeCompare(a.last_message_at || "");
+    });
   rows.innerHTML = sorted.map((t) => {
     const status = threadInFlight.has(t.id) ? "running" : (t.status_hint || "idle");
     const date = fmtThreadDate(t.last_message_at);
