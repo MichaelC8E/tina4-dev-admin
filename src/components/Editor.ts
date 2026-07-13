@@ -2636,6 +2636,17 @@ async function threadsRenameActive(): Promise<void> {
   }
 }
 
+/** A thread in a terminal state — replying to it must NOT re-poke the finished
+ *  thread (that just loops the supervisor's last message). Covers both the live
+ *  status hint and an archived closure reason. */
+function isThreadDone(meta?: ThreadMeta): boolean {
+  if (!meta) return false;
+  return meta.status_hint === "done"
+    || meta.status_hint === "wont_do"
+    || meta.closure_reason === "done"
+    || meta.closure_reason === "wont_do";
+}
+
 /** Modal-scoped send. Wires the reply textarea to supervisorChat
  *  with the modal's chat container as the render target. Detects
  *  the "New Topic:" prefix and spawns a fresh thread first.
@@ -2663,6 +2674,21 @@ async function threadsSend(): Promise<void> {
       msg = rest;
     } catch (e) {
       console.error("New Topic spawn failed", e);
+      return;
+    }
+  }
+
+  // Typing into a DONE (or won't-do) thread starts a NEW thread rather than
+  // re-poking the finished one — spawn it, focus it, and let the plan flow
+  // kick off there. (Explicit "New Topic:" already handled above.)
+  if (!m && activeThreadId && isThreadDone(threadList.find((t) => t.id === activeThreadId))) {
+    try {
+      const t = await apiThreadsCreate(msg.slice(0, 80) || undefined);
+      threadList.push(t);
+      threadMessageCache.set(t.id, []);
+      await threadsShowDetail(t.id);   // switches activeThreadId + focuses it
+    } catch (e) {
+      console.error("auto-new-thread on done reply failed", e);
       return;
     }
   }
