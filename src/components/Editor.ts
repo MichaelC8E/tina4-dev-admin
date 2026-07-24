@@ -2197,12 +2197,33 @@ function renderThreadSidebar(): void {
 /** Pull fresh thread list from server; preserve in-flight markers so
  *  the badge for a thread you're actively chatting in doesn't flap
  *  back to idle while the response is mid-flight. */
-async function refreshThreadList(): Promise<void> {
-  try {
-    threadList = await apiThreadsList();
-    renderThreadSidebar();
-  } catch (e) {
-    console.error("refreshThreadList failed", e);
+/** True when the last thread fetch failed, so the list can say "can't reach the
+ *  agent" instead of "No threads yet" — we don't actually know the list is
+ *  empty, and claiming so sends people hunting for threads that are simply
+ *  unreachable. */
+let threadListUnreachable = false;
+
+/** Pull fresh threads. `retries` is for the COLD START: the pane loads as soon
+ *  as the browser does, often before the agent has finished binding its port,
+ *  so the first fetch 500s and the console shows an error for something that
+ *  fixes itself a second later. Retry briefly with backoff before reporting.
+ *  Routine refreshes pass 0 and stay fast. */
+async function refreshThreadList(retries = 0): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      threadList = await apiThreadsList();
+      threadListUnreachable = false;
+      renderThreadSidebar();
+      return;
+    } catch (e) {
+      if (attempt >= retries) {
+        threadListUnreachable = true;
+        console.error("refreshThreadList failed", e);
+        return;
+      }
+      // 250ms, 500ms, 1s, 2s — ~3.75s total, enough for the agent to boot.
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
   }
 }
 
@@ -2314,7 +2335,8 @@ async function renameThreadInline(threadId: string): Promise<void> {
  *  there are no threads at all, leave the placeholder — the user
  *  clicks + New on the first interaction. */
 async function bootstrapThreads(): Promise<void> {
-  await refreshThreadList();
+  // Cold start — the agent may still be binding its port.
+  await refreshThreadList(4);
   // Embedded pane always defaults to the list view; the developer
   // picks which thread to enter. (The modal version auto-jumped into
   // the last-active thread on open — but the pane is always visible
@@ -2463,12 +2485,18 @@ function renderThreadsListView(): void {
   const rows = document.getElementById("threads-rows");
   if (!rows) return;
   if (!threadList.length) {
-    rows.innerHTML = `
-      <div class="threads-empty">
-        <div style="margin-bottom:0.6rem">No threads yet.</div>
-        <button type="button" class="action-pill action-pill-primary"
-                onclick="window.__threadsNew()">Get started</button>
-      </div>`;
+    // Don't claim the list is empty when we simply could not read it.
+    rows.innerHTML = threadListUnreachable
+      ? `<div class="threads-empty">
+          <div style="margin-bottom:0.6rem">Can't reach the agent — threads unavailable.</div>
+          <button type="button" class="action-pill"
+                  onclick="window.__threadsRetry()">Retry</button>
+        </div>`
+      : `<div class="threads-empty">
+          <div style="margin-bottom:0.6rem">No threads yet.</div>
+          <button type="button" class="action-pill action-pill-primary"
+                  onclick="window.__threadsNew()">Get started</button>
+        </div>`;
     return;
   }
   // Signed-off (archived → DONE) threads sink to the bottom but stay visible,
@@ -2793,6 +2821,9 @@ queueMicrotask(() => {
 (window as any).__threadsShowList = () => threadsShowList();
 (window as any).__threadsShowDetail = (id: string) => { void threadsShowDetail(id); };
 (window as any).__threadsNew = () => { void threadsNew(); };
+(window as any).__threadsRetry = () => {
+  void refreshThreadList(2).then(renderThreadsListView);
+};
 (window as any).__threadsRenameActive = () => { void threadsRenameActive(); };
 
 // ── Plans browse panel ─────────────────────────────────────────────
