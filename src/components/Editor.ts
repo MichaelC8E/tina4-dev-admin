@@ -2793,8 +2793,8 @@ async function threadsSend(): Promise<void> {
     paintThreadsChat(threadId);
     // Refresh meta strip too in case status_hint changed.
     const meta = threadList.find((t) => t.id === threadId);
-    if (meta) {
-      const metaEl = document.getElementById("threads-detail-meta")!;
+    const metaEl = document.getElementById("threads-detail-meta");
+    if (meta && metaEl) {
       const senderHtml = meta.sender ? `<span>📨 from ${esc(meta.sender)}</span>` : "";
       metaEl.innerHTML = `${statusPillHtml(meta.status_hint || "idle")} <span>${esc(fmtThreadDate(meta.last_message_at))}</span> ${senderHtml}`;
     }
