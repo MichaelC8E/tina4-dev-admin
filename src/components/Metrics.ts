@@ -66,6 +66,58 @@ async function loadFullMetrics(): Promise<void> {
   }
 }
 
+/**
+ * Map the engine's dependency graph onto bubble indices.
+ *
+ * The engine resolves every import to a real repo-relative file path, so an exact
+ * lookup is both correct and cheap. Basename matching stays only as a fallback for
+ * older framework payloads that emitted module names instead of paths - it links
+ * the WRONG file whenever two directories hold the same filename.
+ */
+export function buildDependencyEdges(
+  paths: string[],
+  depGraph: Record<string, string[]>,
+): Array<[number, number]> {
+  const edges: Array<[number, number]> = [];
+  const nameIdx: Record<string, number> = {};
+  const pathIdx: Record<string, number> = {};
+  paths.forEach((path, i) => {
+    nameIdx[edgeBasename(path)] = i;
+    pathIdx[path] = i;
+  });
+
+  for (const [src, deps] of Object.entries(depGraph)) {
+    const srcIdx = pathIdx[src];
+    if (srcIdx === undefined) continue;
+    for (const tgt of deps) {
+      const exact = pathIdx[tgt];
+      if (exact !== undefined) {
+        if (exact !== srcIdx) edges.push([srcIdx, exact]);
+        continue;
+      }
+      // Fallback: last meaningful path/module segment, then the whole basename.
+      const segments = tgt.replace(/^\.\//, "").replace(/^\.\.\//, "").split(/[./]/);
+      let tgtIdx: number | undefined;
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const seg = segments[i].toLowerCase();
+        if (seg && seg !== "js" && seg !== "py" && seg !== "rb" && seg !== "ts" && seg !== "index") {
+          tgtIdx = nameIdx[seg];
+          if (tgtIdx !== undefined) break;
+        }
+      }
+      if (tgtIdx === undefined) tgtIdx = nameIdx[edgeBasename(tgt)];
+      if (tgtIdx !== undefined && srcIdx !== tgtIdx) edges.push([srcIdx, tgtIdx]);
+    }
+  }
+  return edges;
+}
+
+function edgeBasename(p: string): string {
+  const n = p.replace(/\\/g, "/").split("/").pop() || "";
+  const dot = n.lastIndexOf(".");
+  return (dot > 0 ? n.substring(0, dot) : n).toLowerCase();
+}
+
 // ── Canvas 2D Bubble Chart (ported from original dev admin) ──
 
 function renderCanvasBubbles(files: any[], container: HTMLElement, depGraph: Record<string, string[]>, scanMode: string): void {
@@ -73,6 +125,14 @@ function renderCanvasBubbles(files: any[], container: HTMLElement, depGraph: Rec
   const H = Math.max(450, Math.min(650, W * 0.45));
   const maxLoc = Math.max(...files.map((f: any) => f.loc)) || 1;
   const maxDeps = Math.max(...files.map((f: any) => f.dep_count || 0)) || 1;
+  // Martin coupling: ca = files that depend on me, instability = ce/(ca+ce).
+  // The per-framework metrics modules never resolved imports to file paths, so they
+  // reported ca=0 for everything and a constant instability of 1.0. Drawing that would
+  // paint every ring "maximally unstable" - a confident lie. So the coupling channels
+  // only switch on once at least one file has a real dependent, which is true of the
+  // engine payload and false of the broken one.
+  const maxAfferent = Math.max(...files.map((f: any) => f.coupling_afferent || 0)) || 1;
+  const couplingResolved = files.some((f: any) => (f.coupling_afferent || 0) > 0);
   const minR = 14;
   const maxR = Math.min(70, W / 10);
 
@@ -125,40 +185,16 @@ function renderCanvasBubbles(files: any[], container: HTMLElement, depGraph: Rec
     }
   }
 
-  // Build edges from dependency graph
-  const edges: [number, number][] = [];
-  function basename(p: string): string { const n = p.replace(/\\/g, "/").split("/").pop() || ""; const d = n.lastIndexOf("."); return (d > 0 ? n.substring(0, d) : n).toLowerCase(); }
-  const nameIdx: Record<string, number> = {};
-  bubbles.forEach((b, i) => { nameIdx[basename(b.f.path)] = i; });
-  for (const [src, deps] of Object.entries(depGraph)) {
-    let srcIdx: number | null = null;
-    bubbles.forEach((b, i) => { if (b.f.path === src) srcIdx = i; });
-    if (srcIdx === null) continue;
-    for (const tgt of deps) {
-      // Try multiple matching strategies
-      const segments = tgt.replace(/^\.\//, "").replace(/^\.\.\//, "").split(/[./]/);
-      let tgtIdx: number | undefined;
-      // 1. Last segment (e.g. "auth" from "./auth.js" or "auth" from "tina4_python.auth")
-      for (let s = segments.length - 1; s >= 0; s--) {
-        const seg = segments[s].toLowerCase();
-        if (seg && seg !== "js" && seg !== "py" && seg !== "rb" && seg !== "ts" && seg !== "index") {
-          tgtIdx = nameIdx[seg];
-          if (tgtIdx !== undefined) break;
-        }
-      }
-      // 2. Full basename match
-      if (tgtIdx === undefined) tgtIdx = nameIdx[basename(tgt)];
-      if (tgtIdx !== undefined && srcIdx !== tgtIdx) edges.push([srcIdx, tgtIdx]);
-    }
-  }
+  const edges = buildDependencyEdges(bubbles.map((b) => b.f.path), depGraph);
 
   // Create canvas
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
   canvas.style.cssText = "display:block;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:#0f172a";
   const modeLabel = scanMode === "framework" ? '<span style="color:#cba6f7;font-weight:600">(Framework)</span> Add code to src/ to see your project' : '';
-  container.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem"><h3 style="margin:0;font-size:0.85rem">Code Landscape ${modeLabel}</h3><span style="font-size:0.65rem;color:var(--muted)">Drag bubbles | Dbl-click to drill down</span></div><div style="position:relative" id="metrics-canvas-wrap"></div>`;
+  container.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem"><h3 style="margin:0;font-size:0.85rem">Code Landscape ${modeLabel}</h3><span style="font-size:0.65rem;color:var(--muted)">Drag bubbles | Dbl-click to drill down</span></div><div style="position:relative" id="metrics-canvas-wrap"></div><div style="margin-top:0.4rem;font-size:0.62rem;color:var(--muted);display:flex;gap:0.9rem;flex-wrap:wrap">${couplingResolved ? '<span>Centre = most depended-on</span><span><span style="color:hsl(210,85%,60%)">&#9679;</span> stable ring</span><span><span style="color:hsl(30,85%,60%)">&#9679;</span> unstable ring</span>' : ''}<span id="metrics-hover-info" class="text-mono"></span></div>`;
   document.getElementById("metrics-canvas-wrap")!.appendChild(canvas);
+  const hoverInfo = document.getElementById("metrics-hover-info")!;
 
   // Zoom buttons
   const btnWrap = document.createElement("div");
@@ -186,8 +222,15 @@ function renderCanvasBubbles(files: any[], container: HTMLElement, depGraph: Rec
       if (i === dragIdx) continue;
       const b = bubbles[i];
       const dx = cx - b.x, dy = cy - b.y;
+      // Pull is driven by afferent coupling: the more files depend on you, the more
+      // central you are architecturally, so the layout itself now carries meaning -
+      // core modules settle in the middle, leaves drift to the rim. Size still
+      // contributes so a big untested file cannot hide at the edge.
       const sizeFactor = 0.3 + (b.r / maxR) * 0.7;
-      const pull = grav * sizeFactor * sizeFactor;
+      const centrality = couplingResolved
+        ? 0.3 + ((b.f.coupling_afferent || 0) / maxAfferent) * 0.7
+        : sizeFactor;
+      const pull = grav * sizeFactor * centrality;
       b.vx += dx * pull; b.vy += dy * pull;
     }
     // Spring forces along edges
@@ -273,6 +316,16 @@ function renderCanvasBubbles(files: any[], container: HTMLElement, depGraph: Rec
       ctx.beginPath(); ctx.arc(b.x, b.y, drawR, 0, Math.PI * 2);
       ctx.fillStyle = b.color; ctx.globalAlpha = isH ? 1.0 : 0.85; ctx.fill();
       ctx.globalAlpha = 1; ctx.strokeStyle = isH ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.25)"; ctx.lineWidth = isH ? 2.5 : 1.5; ctx.stroke();
+      // Instability ring: blue = stable (others depend on it, it depends on little),
+      // amber = unstable (depends outward, nothing depends on it). Only drawn where
+      // coupling actually exists, so an isolated file gets no misleading ring.
+      const inst = b.f.instability;
+      if (couplingResolved && typeof inst === "number"
+          && ((b.f.coupling_afferent || 0) + (b.f.coupling_efferent || 0)) > 0) {
+        ctx.beginPath(); ctx.arc(b.x, b.y, drawR + 3, 0, Math.PI * 2);
+        ctx.strokeStyle = `hsl(${Math.round(210 - 180 * inst)},85%,60%)`;
+        ctx.lineWidth = 1 + inst * 2.5; ctx.stroke();
+      }
       // Label
       const name = b.f.path.split("/").pop()?.replace(/\.\w+$/, "") || "?";
       if (drawR > 16) {
@@ -297,6 +350,17 @@ function renderCanvasBubbles(files: any[], container: HTMLElement, depGraph: Rec
     }
 
     ctx.restore();
+
+    // Coupling readout for the hovered file. A ring colour with no numbers behind
+    // it is decoration; this makes ca/ce/instability checkable.
+    if (hoveredIdx >= 0) {
+      const f = bubbles[hoveredIdx].f;
+      const ca = f.coupling_afferent ?? 0, ce = f.coupling_efferent ?? 0;
+      const inst = typeof f.instability === "number" ? f.instability.toFixed(2) : "-";
+      hoverInfo.textContent = `${f.path}  ca ${ca} / ce ${ce} / I ${inst} / MI ${f.maintainability}`;
+    } else if (hoverInfo.textContent) {
+      hoverInfo.textContent = "";
+    }
     requestAnimationFrame(draw);
   }
 
