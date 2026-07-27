@@ -2414,10 +2414,14 @@ let threadsPaneAbort: AbortController | null = null;
 function threadsShowList(): void {
   threadsPaneView = "list";
   const el = (id: string) => document.getElementById(id);
-  el("threads-pane-head-list")!.hidden = false;
-  el("threads-pane-head-detail")!.hidden = true;
-  el("threads-list-view")!.hidden = false;
-  el("threads-detail-view")!.hidden = true;
+  const headList = el("threads-pane-head-list");
+  if (headList) headList.hidden = false;
+  const headDetail = el("threads-pane-head-detail");
+  if (headDetail) headDetail.hidden = true;
+  const listView = el("threads-list-view");
+  if (listView) listView.hidden = false;
+  const detailView = el("threads-detail-view");
+  if (detailView) detailView.hidden = true;
   void refreshThreadList().then(renderThreadsListView);
 }
 
@@ -2427,15 +2431,20 @@ async function threadsShowDetail(threadId: string): Promise<void> {
   const meta = threadList.find((t) => t.id === threadId);
   if (!meta) return;
   const el = (id: string) => document.getElementById(id);
-  el("threads-pane-head-list")!.hidden = true;
-  el("threads-pane-head-detail")!.hidden = false;
-  el("threads-list-view")!.hidden = true;
-  el("threads-detail-view")!.hidden = false;
-  el("threads-detail-title")!.textContent = meta.title || "Thread";
+  const headList = el("threads-pane-head-list");
+  if (headList) headList.hidden = true;
+  const headDetail = el("threads-pane-head-detail");
+  if (headDetail) headDetail.hidden = false;
+  const listView = el("threads-list-view");
+  if (listView) listView.hidden = true;
+  const detailView = el("threads-detail-view");
+  if (detailView) detailView.hidden = false;
+  const title = el("threads-detail-title");
+  if (title) title.textContent = meta.title || "Thread";
   // Meta strip: pill + sender (for feedback threads) + date.
-  const metaEl = el("threads-detail-meta")!;
+  const metaEl = el("threads-detail-meta");
   const senderHtml = meta.sender ? `<span>📨 from ${esc(meta.sender)}</span>` : "";
-  metaEl.innerHTML = `${statusPillHtml(meta.status_hint || "idle")} <span>${esc(fmtThreadDate(meta.last_message_at))}</span> ${senderHtml}`;
+  if (metaEl) metaEl.innerHTML = `${statusPillHtml(meta.status_hint || "idle")} <span>${esc(fmtThreadDate(meta.last_message_at))}</span> ${senderHtml}`;
   // Paint messages into the in-pane chat container.
   paintThreadsChat(threadId);
   // Focus the reply input.
